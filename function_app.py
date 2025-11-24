@@ -1,30 +1,25 @@
 import logging
-import requests
 import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
-
 import azure.functions as func
+from zeep import Client
 
 # 1. Se define la aplicación de la función y el nivel de autenticación por defecto.
 app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
 
+# URL del WSDL (Definición del servicio)
+WSDL_URL = 'https://www.superfinanciera.gov.co/SuperfinancieraWebServiceTRM/TCRMServicesWebService/TCRMServicesWebService?WSDL'
+# URL del Endpoint real (Forzamos HTTPS para evitar problemas con la URL interna del WSDL)
+SERVICE_URL = 'https://www.superfinanciera.gov.co/SuperfinancieraWebServiceTRM/TCRMServicesWebService/TCRMServicesWebService'
+
 def obtener_trm_vigente(fecha_consulta_str: str | None = None):
     """
-    Obtiene la Tasa Representativa del Mercado (TRM) para una fecha específica
-    o para el día actual si no se especifica una fecha.
-
-    Args:
-        fecha_consulta_str (str, optional): La fecha a consultar en formato 'AAAA-MM-DD'.
-                                            Si es None, se usa la fecha actual. Defaults to None.
-    
-    Returns:
-        tuple: (valor_trm, status_code, mensaje_error)
+    Obtiene la Tasa Representativa del Mercado (TRM) desde el servicio SOAP
+    de la Superfinanciera de Colombia.
     """
-    api_url = "https://www.datos.gov.co/resource/32sa-8pi3.json"
-    
     try:
-        # Si no se provee una fecha, se usa la actual de Colombia.
+        # Determinar la fecha a consultar
         if not fecha_consulta_str:
             zona_horaria_colombia = ZoneInfo("America/Bogota")
             fecha_actual = datetime.now(zona_horaria_colombia)
@@ -32,57 +27,51 @@ def obtener_trm_vigente(fecha_consulta_str: str | None = None):
         else:
             fecha_a_usar = fecha_consulta_str
 
-        # La consulta ahora compara la fecha truncada de los campos de la API
-        # contra la fecha a usar (sin hora), lo cual es robusto.
-        query = (
-            f"$where=date_trunc_ymd(vigenciadesde) <= '{fecha_a_usar}' "
-            f"AND date_trunc_ymd(vigenciahasta) >= '{fecha_a_usar}'"
-        )
-        
-        response = requests.get(f"{api_url}?{query}")
-        response.raise_for_status()
-        
-        data = response.json()
-        
-        if data and len(data) > 0:
-            trm_valor_str = data[0].get("valor")
-            if trm_valor_str:
-                return (float(trm_valor_str), 200, None)
-        
-        return (None, 404, f"No se encontró una TRM vigente para la fecha {fecha_a_usar}.")
+        # Inicializar el cliente SOAP
+        client = Client(WSDL_URL)
 
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Error de red o en la solicitud a la API: {e}")
-        return (None, 502, "Error al comunicarse con el servicio de TRM externo.")
-    except (ValueError, KeyError, IndexError) as e:
-        logging.error(f"Error al procesar los datos recibidos: {e}")
-        return (None, 500, "Error interno al procesar la respuesta de la TRM.")
+        # CRITICO: Forzar la dirección del servicio a la URL pública HTTPS.
+        # A veces el WSDL contiene direcciones internas (http://app-sfc...) que fallan.
+        client.service._binding_options['address'] = SERVICE_URL
+
+        # Realizar la consulta
+        response = client.service.queryTCRM(fecha_a_usar)
+
+        if response is None:
+             return (None, 404, f"No se encontró información de TRM para la fecha {fecha_a_usar}.")
+
+        valor_trm = response.value
+
+        if valor_trm:
+            return (float(valor_trm), 200, None)
+        else:
+            return (None, 404, f"La entidad retornó datos vacíos para la fecha {fecha_a_usar}.")
+
+    except Exception as e:
+        # Devolvemos el error específico (str(e)) para facilitar la depuración
+        logging.error(f"Error al consultar SOAP Superfinanciera: {str(e)}")
+        return (None, 502, f"Error de comunicación: {str(e)}")
 
 @app.route(route="GetTrm", methods=["get"])
 def GetTrm(req: func.HttpRequest) -> func.HttpResponse:
     """
-    Punto de entrada principal para la Azure Function (modelo v2).
-    Acepta un parámetro opcional 'fecha' (AAAA-MM-DD) para consultas históricas.
+    Punto de entrada principal para la Azure Function.
     """
-    logging.info('Se ha recibido una solicitud para obtener la TRM (modelo v2).')
+    logging.info('Se ha recibido una solicitud para obtener la TRM (Oficial Superfinanciera).')
 
     fecha_param = req.params.get('fecha')
 
-    # Validar el formato de la fecha si se proporciona
+    # Validar formato de fecha
     if fecha_param:
         try:
             datetime.strptime(fecha_param, '%Y-%m-%d')
         except ValueError:
-            error_response = {
-                "error": "Formato de fecha inválido. Utilice AAAA-MM-DD."
-            }
             return func.HttpResponse(
-                json.dumps(error_response),
+                json.dumps({"error": "Formato de fecha inválido. Utilice AAAA-MM-DD."}),
                 status_code=400,
                 mimetype="application/json"
             )
 
-    # Llamar a la lógica de negocio con el parámetro de fecha (puede ser None)
     trm, status_code, error_message = obtener_trm_vigente(fecha_param)
 
     if error_message:
@@ -95,7 +84,8 @@ def GetTrm(req: func.HttpRequest) -> func.HttpResponse:
         response_data = {
             "valor": trm,
             "unidad": "COP",
-            "fecha_consulta": fecha_param if fecha_param else datetime.now(ZoneInfo("America/Bogota")).strftime('%Y-%m-%d')
+            "fecha_consulta": fecha_param if fecha_param else datetime.now(ZoneInfo("America/Bogota")).strftime('%Y-%m-%d'),
+            "fuente": "Superfinanciera de Colombia (SOAP)"
         }
         return func.HttpResponse(
             json.dumps(response_data),

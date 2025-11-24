@@ -1,14 +1,16 @@
-# API de TRM con Azure Functions
+# API de TRM con Azure Functions (Oficial Superfinanciera)
 
-Este proyecto implementa una API RESTful utilizando Azure Functions (modelo de programación v2 en Python) para consultar la Tasa Representativa del Mercado (TRM) de Colombia. La función obtiene los datos del portal de Datos Abiertos de Colombia.
+Este proyecto implementa una API RESTful utilizando **Azure Functions** (modelo de programación v2 en Python) para consultar la Tasa Representativa del Mercado (TRM) de Colombia.
+
+A diferencia de versiones anteriores que dependían de portales de datos abiertos, esta versión se conecta **directamente al Web Service SOAP oficial de la Superintendencia Financiera de Colombia**, garantizando la máxima fiabilidad y disponibilidad del dato.
 
 ## Características
 
+- **Fuente Oficial**: Consume el servicio SOAP (`TCRMServicesWebService`) de la Superfinanciera.
+- **Interfaz Simplificada**: Expone los datos complejos del SOAP a través de un endpoint REST (JSON) fácil de consumir.
 - **Consulta de TRM actual**: Obtiene la TRM vigente para el día en curso (zona horaria de Colombia).
 - **Consulta de TRM histórica**: Permite consultar la TRM para una fecha específica.
-- **Validación de entrada**: Valida el formato de la fecha proporcionada.
-- **Manejo de errores**: Implementa un manejo de errores robusto para fallos en la comunicación con la API externa o en el procesamiento de datos.
-- **Seguridad**: Protegida por una clave de función (`FUNCTION` auth level).
+- **Manejo de Errores**: Gestión robusta de fallos de conexión, timeouts y errores XML/SOAP.
 
 ---
 
@@ -28,8 +30,8 @@ Sigue estos pasos para configurar y ejecutar el proyecto en tu máquina local.
 
 1.  **Clona el repositorio:**
     ```bash
-    git clone <URL_DEL_REPOSITORIO>
-    cd <NOMBRE_DEL_DIRECTORIO>
+    git clone [https://github.com/juancsanchez/TRM_Colombia_HTTP.git](https://github.com/juancsanchez/TRM_Colombia_HTTP.git)
+    cd TRM_Colombia_HTTP
     ```
 
 2.  **Crea un entorno virtual:**
@@ -48,14 +50,8 @@ Sigue estos pasos para configurar y ejecutar el proyecto en tu máquina local.
         source .venv/bin/activate
         ```
 
-4.  **Crea el archivo `requirements.txt`:**
-    Este archivo debe contener las librerías Python necesarias.
-    ```
-    azure-functions
-    requests
-    ```
-
-5.  **Instala las dependencias:**
+4.  **Instala las dependencias:**
+    El proyecto requiere `azure-functions`, `zeep` (para SOAP) y `requests`.
     ```bash
     pip install -r requirements.txt
     ```
@@ -98,7 +94,7 @@ Una vez configurado el entorno, puedes iniciar la Function App localmente.
 
 ### `GET /api/GetTrm`
 
-Recupera la TRM vigente para la fecha especificada o la fecha actual.
+Recupera la TRM vigente consultando el SOAP de la Superfinanciera.
 
 #### Parámetros de Consulta (Query Parameters)
 
@@ -113,7 +109,8 @@ Recupera la TRM vigente para la fecha especificada o la fecha actual.
     {
       "valor": 4050.11,
       "unidad": "COP",
-      "fecha_consulta": "2023-11-15"
+      "fecha_consulta": "2023-11-15",
+      "fuente": "Superfinanciera de Colombia (SOAP)"
     }
     ```
 
@@ -124,10 +121,10 @@ Recupera la TRM vigente para la fecha especificada o la fecha actual.
     }
     ```
 
--   **`404 Not Found` - TRM no encontrada**
+-   **`502 Bad Gateway` - Error de comunicación con Superfinanciera**
     ```json
     {
-      "error": "No se encontró una TRM vigente para la fecha 2023-01-01."
+      "error": "Error de comunicación: <Detalle del error SOAP>"
     }
     ```
 
@@ -139,6 +136,3 @@ Puedes desplegar esta función en tu suscripción de Azure usando Azure Function
 
 ```bash
 func azure functionapp publish <NOMBRE_DE_TU_FUNCTION_APP>
-```
-
-También puedes usar la extensión de Azure para Visual Studio Code para un despliegue guiado.
